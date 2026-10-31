@@ -9,6 +9,7 @@ import androidx.compose.material.icons.automirrored.filled.TrendingDown
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.AddAlert
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.Badge
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.HealthAndSafety
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.NotificationsActive
@@ -58,7 +60,7 @@ import tk.glucodata.R
 /** Something on the Settings tab itself that opens a dialog or sheet rather than a screen. */
 internal enum class SettingsSearchAction {
     THEME, LANGUAGE, UNIT, KEEP_DISPLAYED_VALUES, BACKUPS, EXPORT, IMPORT,
-    RESTART, CLEAR_HISTORY, CLEAR_APP_DATA, FACTORY_RESET,
+    RESTART, CLEAR_HISTORY, CLEAR_APP_DATA, FACTORY_RESET, CHILD_FRIENDLY_MODE,
 }
 
 internal sealed interface SettingsSearchTarget {
@@ -95,6 +97,7 @@ internal object SettingsSearchAnchors {
     const val HANDOVER = "connection/handover"
     const val TURBO = "connection/turbo"
     const val AUTOCONNECT = "connection/autoconnect"
+    const val CHILD_FRIENDLY_MODE = "settings/child-friendly-mode"
 }
 
 /** Icon-tile role, matching the group colour the row wears on the Settings tab. */
@@ -105,7 +108,8 @@ internal enum class SettingsSearchTone { PRIMARY, SECONDARY, TERTIARY, NEUTRAL, 
  * a result never opens a screen that lacks it.
  */
 internal enum class SettingsSearchCondition {
-    LIBREVIEW, DEXCOM_SHARE, MQ_ACCOUNT, OTTAI, HEALTH_CONNECT, LIBRE2_IDENTITY, APP_TREND
+    LIBREVIEW, DEXCOM_SHARE, MQ_ACCOUNT, OTTAI, HEALTH_CONNECT, LIBRE2_IDENTITY, APP_TREND,
+    CALIBRATION_CONTROLS_VISIBLE, SMOOTHING_CONTROLS_VISIBLE, DATA_CLEARING_CONTROLS_VISIBLE
 }
 
 /**
@@ -187,6 +191,11 @@ internal object SettingsSearchIndex {
         SettingsSearchEntry(R.string.languagename, TOP, Icons.Default.Language, P, action(SettingsSearchAction.LANGUAGE)),
         SettingsSearchEntry(R.string.settings_unit_title, TOP, Icons.Default.Straighten, P, action(SettingsSearchAction.UNIT),
             terms = listOf("mg/dL", "mmol/L")),
+        SettingsSearchEntry(R.string.child_friendly_mode_title, TOP, Icons.Default.Security, P,
+            action(SettingsSearchAction.CHILD_FRIENDLY_MODE),
+            keywords = listOf(R.string.child_friendly_mode_desc),
+            terms = listOf("kids", "kid-proof", "childproof", "child mode"),
+            anchor = SettingsSearchAnchors.CHILD_FRIENDLY_MODE),
         SettingsSearchEntry(R.string.app_updates_title, TOP, Icons.Default.SystemUpdate, P, route("settings/app-updates")),
 
         // Everyday (second group, no label)
@@ -212,7 +221,7 @@ internal object SettingsSearchIndex {
             terms = listOf("TTS")),
         SettingsSearchEntry(R.string.settings_calibration_title, TOP, Icons.Default.WaterDrop, P, route("settings/calibrations"),
             keywords = listOf(R.string.calibration_from_journal_title),
-            terms = listOf("fingerstick")),
+            terms = listOf("fingerstick"), condition = SettingsSearchCondition.CALIBRATION_CONTROLS_VISIBLE),
         SettingsSearchEntry(R.string.journal_title, TOP, Icons.Default.EditNote, P, route("settings/journal"),
             keywords = listOf(R.string.settings_journal_desc, R.string.journal_show_tab_title,
                 R.string.journal_dashboard_quickadd_title, R.string.journal_aaps_import_title,
@@ -247,12 +256,19 @@ internal object SettingsSearchIndex {
             Icons.Default.CropSquare, S, route("settings/display-colors"), anchor = SettingsSearchAnchors.PREVIEW_WINDOW),
         SettingsSearchEntry(R.string.graph_smoothing_title, DISPLAY, Icons.AutoMirrored.Filled.TrendingUp, S, route("settings/data-smoothing"),
             keywords = listOf(R.string.data_smoothing_window_title, R.string.data_smoothing_collapse_title,
-                R.string.data_smoothing_scope_title)),
+                R.string.data_smoothing_scope_title, R.string.data_smoothing_target_sent_title,
+                R.string.data_smoothing_causal_title), condition = SettingsSearchCondition.SMOOTHING_CONTROLS_VISIBLE),
         SettingsSearchEntry(R.string.predictive_simulation_title, DISPLAY, Icons.AutoMirrored.Filled.ShowChart, S,
             route("settings/predictive-simulation"),
             keywords = listOf(R.string.settings_prediction_desc, R.string.predictive_trend_momentum,
                 R.string.predictive_forecast_horizon, R.string.predictive_notification_chart,
                 R.string.predictive_model_tuning)),
+        SettingsSearchEntry(R.string.prediction_analysis_accuracy, DISPLAY + R.string.predictive_simulation_title,
+            Icons.Default.Insights, S, route("settings/predictive-simulation/analysis"),
+            keywords = listOf(R.string.prediction_analysis_section, R.string.prediction_analysis_record,
+                R.string.prediction_analysis_past_title)),
+        SettingsSearchEntry(R.string.prediction_adaptive_title, DISPLAY + R.string.predictive_simulation_title,
+            Icons.Default.AutoAwesome, S, route("settings/predictive-simulation")),
         SettingsSearchEntry(R.string.notification_settings_title, DISPLAY, Icons.Default.ClearAll, S, route("settings/notification-display"),
             keywords = listOf(R.string.notification_settings_subtitle, R.string.typography)),
         SettingsSearchEntry(R.string.show_trend_arrow, DISPLAY + R.string.notification_settings_title,
@@ -359,8 +375,11 @@ internal object SettingsSearchIndex {
         // Danger zone: restart acts at once, as its row does; the rest ask for confirmation.
         SettingsSearchEntry(R.string.restart_app, DANGER, Icons.Default.Refresh, E, action(SettingsSearchAction.RESTART),
             keywords = listOf(R.string.restart_app_desc)),
-        SettingsSearchEntry(R.string.clear_history, DANGER, Icons.Default.History, E, action(SettingsSearchAction.CLEAR_HISTORY)),
-        SettingsSearchEntry(R.string.clear_app_data, DANGER, Icons.Default.Delete, E, action(SettingsSearchAction.CLEAR_APP_DATA)),
-        SettingsSearchEntry(R.string.factory_reset, DANGER, Icons.Default.Warning, E, action(SettingsSearchAction.FACTORY_RESET)),
+        SettingsSearchEntry(R.string.clear_history, DANGER, Icons.Default.History, E, action(SettingsSearchAction.CLEAR_HISTORY),
+            condition = SettingsSearchCondition.DATA_CLEARING_CONTROLS_VISIBLE),
+        SettingsSearchEntry(R.string.clear_app_data, DANGER, Icons.Default.Delete, E, action(SettingsSearchAction.CLEAR_APP_DATA),
+            condition = SettingsSearchCondition.DATA_CLEARING_CONTROLS_VISIBLE),
+        SettingsSearchEntry(R.string.factory_reset, DANGER, Icons.Default.Warning, E, action(SettingsSearchAction.FACTORY_RESET),
+            condition = SettingsSearchCondition.DATA_CLEARING_CONTROLS_VISIBLE),
     )
 }

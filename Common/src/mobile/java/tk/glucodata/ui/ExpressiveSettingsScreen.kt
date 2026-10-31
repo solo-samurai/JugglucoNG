@@ -86,6 +86,7 @@ import tk.glucodata.drivers.ManagedSensorRuntime
 import tk.glucodata.ui.components.StyledSwitch
 import tk.glucodata.ui.theme.labelLargeExpressive
 import tk.glucodata.ui.viewmodel.DashboardViewModel
+import tk.glucodata.ui.viewmodel.PredictionAnalysisViewModel
 //import tk.glucodata.ui.components.ExportDataDialog
 import tk.glucodata.ui.components.*
 import kotlin.math.roundToInt
@@ -109,6 +110,8 @@ fun ExpressiveSettingsScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val childFriendlyModeSettings = rememberChildFriendlyModeSettings()
+    val childFriendlyModeEnabled = childFriendlyModeSettings.enabled
     val sensorStatusRevision by tk.glucodata.UiRefreshBus.revision.collectAsStateWithLifecycle()
     val showMqAccount = remember(context, sensorStatusRevision) {
         tk.glucodata.drivers.mq.MQRegistry.persistedRecords(context).isNotEmpty()
@@ -136,9 +139,7 @@ fun ExpressiveSettingsScreen(
     val unit by viewModel.unit.collectAsStateWithLifecycle()
     val isMmol = tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit)
     val chartSmoothingMinutes by viewModel.chartSmoothingMinutes.collectAsStateWithLifecycle()
-    val dataSmoothingGraphOnly by viewModel.dataSmoothingGraphOnly.collectAsStateWithLifecycle()
-    val dataSmoothingCollapseChunks by viewModel.dataSmoothingCollapseChunks.collectAsStateWithLifecycle()
-    val dataSmoothingExchangeOnly by viewModel.dataSmoothingExchangeOnly.collectAsStateWithLifecycle()
+    val dataSmoothingTargets by viewModel.dataSmoothingTargets.collectAsStateWithLifecycle()
     val journalEnabled by viewModel.journalEnabled.collectAsStateWithLifecycle()
     val predictiveSimulationEnabled by viewModel.predictiveSimulationEnabled.collectAsStateWithLifecycle()
     val alertsMasterEnabled by viewModel.alertsMasterEnabled.collectAsStateWithLifecycle()
@@ -221,7 +222,7 @@ fun ExpressiveSettingsScreen(
     )
     val searchCandidates = remember(
         context, searchLocales, showLibreView, showDexcomShare, showMqAccount, showOttaiSettings,
-        showLibre2Identity, showAppTrend
+        showLibre2Identity, showAppTrend, childFriendlyModeSettings
     ) {
         SettingsSearchIndex.resolve(context) { condition ->
             when (condition) {
@@ -232,6 +233,12 @@ fun ExpressiveSettingsScreen(
                 SettingsSearchCondition.HEALTH_CONNECT -> PhoneAppsSettings.healthConnectSupported
                 SettingsSearchCondition.LIBRE2_IDENTITY -> showLibre2Identity
                 SettingsSearchCondition.APP_TREND -> showAppTrend
+                SettingsSearchCondition.CALIBRATION_CONTROLS_VISIBLE ->
+                    !childFriendlyModeSettings.hideCalibration
+                SettingsSearchCondition.SMOOTHING_CONTROLS_VISIBLE ->
+                    !childFriendlyModeSettings.hideSmoothing
+                SettingsSearchCondition.DATA_CLEARING_CONTROLS_VISIBLE ->
+                    !childFriendlyModeSettings.hideDataClearing
             }
         }
     }
@@ -257,18 +264,14 @@ fun ExpressiveSettingsScreen(
         val collapseIntervalMinutes = DataSmoothing.collapseIntervalMinutes(chartSmoothingMinutes)
         buildList {
             add(stringResource(R.string.minutes_short_format, chartSmoothingMinutes))
-            if (dataSmoothingExchangeOnly) {
-                add(stringResource(R.string.data_smoothing_exchange_only_title))
-            } else if (dataSmoothingGraphOnly) {
-                add(stringResource(
-                    if (dataSmoothingCollapseChunks) R.string.data_smoothing_scope_graph_and_sent
-                    else R.string.data_smoothing_graph_only_title
-                ))
-            } else {
-                add(stringResource(R.string.data_smoothing_scope_all))
-            }
-            if (dataSmoothingCollapseChunks) {
-                add(stringResource(R.string.data_smoothing_collapse_summary_format, collapseIntervalMinutes))
+            val smoothedScope = dataSmoothingScopeLabel(dataSmoothingTargets)
+            val fewerScope = dataSmoothingFewerScopeLabel(dataSmoothingTargets)
+            smoothedScope?.let { add(stringResource(it)) }
+            when (fewerScope) {
+                null -> Unit
+                // Fewer readings wherever it is smoothed: the interval says it all.
+                smoothedScope -> add(stringResource(R.string.data_smoothing_collapse_summary_format, collapseIntervalMinutes))
+                else -> add(stringResource(R.string.data_smoothing_fewer_summary_format, stringResource(fewerScope)))
             }
         }.joinToString(" · ")
     }
@@ -334,6 +337,10 @@ fun ExpressiveSettingsScreen(
                 SettingsSearchAction.CLEAR_HISTORY -> showClearHistoryDialog = true
                 SettingsSearchAction.CLEAR_APP_DATA -> showClearDataDialog = true
                 SettingsSearchAction.FACTORY_RESET -> showFactoryResetDialog = true
+                SettingsSearchAction.CHILD_FRIENDLY_MODE -> {
+                    SettingsSearchReveal.request(entry.anchor)
+                    searchQuery = ""
+                }
             }
         }
     }
@@ -396,6 +403,17 @@ fun ExpressiveSettingsScreen(
                     position = CardPosition.MIDDLE,
                     onClick = { showUnitDialog = true }
                 )
+                SettingsNavSwitchItem(
+                    title = stringResource(R.string.child_friendly_mode_title),
+                    subtitle = stringResource(R.string.child_friendly_mode_desc),
+                    checked = childFriendlyModeEnabled,
+                    onCheckedChange = { ChildFriendlyMode.setEnabled(context, it) },
+                    onClick = { navController.navigate("settings/child-friendly-mode") },
+                    icon = Icons.Default.Security,
+                    iconTint = generalColor,
+                    position = CardPosition.MIDDLE,
+                    searchAnchor = SettingsSearchAnchors.CHILD_FRIENDLY_MODE,
+                )
                 AppUpdatesSettingsItem(
                     iconTint = generalColor,
                     position = CardPosition.BOTTOM,
@@ -423,21 +441,23 @@ fun ExpressiveSettingsScreen(
                     iconTint = MaterialTheme.colorScheme.error,
                     position = CardPosition.TOP,
                 )
-                SettingsNavSwitchItem(
-                    title = stringResource(R.string.settings_calibration_title),
-                    subtitle = stringResource(
-                        R.string.settings_calibration_desc,
-                        stringResource(if (isRawCalibrationMode) R.string.raw else R.string.auto)
-                    ),
-                    checked = calibrationEnabled,
-                    onCheckedChange = {
-                        CalibrationManager.setEnabledForMode(isRawCalibrationMode, it, sensorName)
-                    },
-                    onClick = { navController.navigate("settings/calibrations") },
-                    icon = Icons.Default.WaterDrop,
-                    iconTint = everydayColor,
-                    position = CardPosition.MIDDLE
-                )
+                if (!childFriendlyModeSettings.hideCalibration) {
+                    SettingsNavSwitchItem(
+                        title = stringResource(R.string.settings_calibration_title),
+                        subtitle = stringResource(
+                            R.string.settings_calibration_desc,
+                            stringResource(if (isRawCalibrationMode) R.string.raw else R.string.auto)
+                        ),
+                        checked = calibrationEnabled,
+                        onCheckedChange = {
+                            CalibrationManager.setEnabledForMode(isRawCalibrationMode, it, sensorName)
+                        },
+                        onClick = { navController.navigate("settings/calibrations") },
+                        icon = Icons.Default.WaterDrop,
+                        iconTint = everydayColor,
+                        position = CardPosition.MIDDLE
+                    )
+                }
                 SettingsNavSwitchItem(
                     title = stringResource(R.string.journal_title),
                     subtitle = stringResource(R.string.settings_journal_desc),
@@ -465,16 +485,18 @@ fun ExpressiveSettingsScreen(
                     position = CardPosition.TOP,
                     onClick = { navController.navigate("settings/display-colors") }
                 )
-                SettingsNavSwitchItem(
-                    title = stringResource(R.string.graph_smoothing_title),
-                    subtitle = graphSmoothingLabel,
-                    checked = chartSmoothingMinutes > 0,
-                    onCheckedChange = { viewModel.setDataSmoothingEnabled(it) },
-                    onClick = { navController.navigate("settings/data-smoothing") },
-                    icon = Icons.AutoMirrored.Filled.TrendingUp,
-                    iconTint = displayColor,
-                    position = CardPosition.MIDDLE
-                )
+                if (!childFriendlyModeSettings.hideSmoothing) {
+                    SettingsNavSwitchItem(
+                        title = stringResource(R.string.graph_smoothing_title),
+                        subtitle = graphSmoothingLabel,
+                        checked = chartSmoothingMinutes > 0,
+                        onCheckedChange = { viewModel.setDataSmoothingEnabled(it) },
+                        onClick = { navController.navigate("settings/data-smoothing") },
+                        icon = Icons.AutoMirrored.Filled.TrendingUp,
+                        iconTint = displayColor,
+                        position = CardPosition.MIDDLE
+                    )
+                }
                 SettingsNavSwitchItem(
                     title = stringResource(R.string.predictive_simulation_title),
                     subtitle = stringResource(R.string.settings_prediction_desc),
@@ -773,34 +795,40 @@ fun ExpressiveSettingsScreen(
                     title = stringResource(R.string.restart_app),
                     subtitle = stringResource(R.string.restart_app_desc),
                     icon = Icons.Filled.Refresh,
-                    position = CardPosition.TOP,
+                    position = if (childFriendlyModeSettings.hideDataClearing) {
+                        CardPosition.SINGLE
+                    } else {
+                        CardPosition.TOP
+                    },
                     severity = DangerSeverity.LOW,
                     onClick = { context.findActivity()?.fullRestart() }
                 )
-                DangerItem(
-                    title = stringResource(R.string.clear_history),
-                    subtitle = stringResource(R.string.clear_history_desc_short),
-                    icon = Icons.Filled.History,
-                    position = CardPosition.MIDDLE,
-                    severity = DangerSeverity.LOW,
-                    onClick = { showClearHistoryDialog = true }
-                )
-                DangerItem(
-                    title = stringResource(R.string.clear_app_data),
-                    subtitle = stringResource(R.string.clear_app_data_desc),
-                    icon = Icons.Filled.Delete,
-                    position = CardPosition.MIDDLE,
-                    severity = DangerSeverity.MEDIUM,
-                    onClick = { showClearDataDialog = true }
-                )
-                DangerItem(
-                    title = stringResource(R.string.factory_reset),
-                    subtitle = stringResource(R.string.factory_reset_desc),
-                    icon = Icons.Filled.Warning,
-                    position = CardPosition.BOTTOM,
-                    severity = DangerSeverity.HIGH,
-                    onClick = { showFactoryResetDialog = true }
-                )
+                if (!childFriendlyModeSettings.hideDataClearing) {
+                    DangerItem(
+                        title = stringResource(R.string.clear_history),
+                        subtitle = stringResource(R.string.clear_history_desc_short),
+                        icon = Icons.Filled.History,
+                        position = CardPosition.MIDDLE,
+                        severity = DangerSeverity.LOW,
+                        onClick = { showClearHistoryDialog = true }
+                    )
+                    DangerItem(
+                        title = stringResource(R.string.clear_app_data),
+                        subtitle = stringResource(R.string.clear_app_data_desc),
+                        icon = Icons.Filled.Delete,
+                        position = CardPosition.MIDDLE,
+                        severity = DangerSeverity.MEDIUM,
+                        onClick = { showClearDataDialog = true }
+                    )
+                    DangerItem(
+                        title = stringResource(R.string.factory_reset),
+                        subtitle = stringResource(R.string.factory_reset_desc),
+                        icon = Icons.Filled.Warning,
+                        position = CardPosition.BOTTOM,
+                        severity = DangerSeverity.HIGH,
+                        onClick = { showFactoryResetDialog = true }
+                    )
+                }
             }
         }
 
@@ -843,8 +871,8 @@ fun ExpressiveSettingsScreen(
     }, { showUnitDialog = false })
     if (showThemeDialog) ThemePickerDialog(themeMode, { onThemeChanged(it); showThemeDialog = false }, { showThemeDialog = false })
     if (showLanguageDialog) LanguagePickerDialog { showLanguageDialog = false }
-    if (showClearHistoryDialog) ConfirmActionDialog(stringResource(R.string.clean_history_confirm), stringResource(R.string.clear_history_desc_long), Icons.Filled.History, { scope.launch { tk.glucodata.data.DataManagement.clearHistory() }; showClearHistoryDialog = false }, { showClearHistoryDialog = false })
-    if (showClearDataDialog) ConfirmActionDialog(
+    if (showClearHistoryDialog && !childFriendlyModeSettings.hideDataClearing) ConfirmActionDialog(stringResource(R.string.clean_history_confirm), stringResource(R.string.clear_history_desc_long), Icons.Filled.History, { scope.launch { tk.glucodata.data.DataManagement.clearHistory() }; showClearHistoryDialog = false }, { showClearHistoryDialog = false })
+    if (showClearDataDialog && !childFriendlyModeSettings.hideDataClearing) ConfirmActionDialog(
         stringResource(R.string.clean_data_confirm), 
         stringResource(R.string.clear_app_data_desc), 
         Icons.Filled.Delete, 
@@ -859,7 +887,7 @@ fun ExpressiveSettingsScreen(
         { showClearDataDialog = false }, 
         isDestructive = true
     )
-    if (showFactoryResetDialog) ConfirmActionDialog(
+    if (showFactoryResetDialog && !childFriendlyModeSettings.hideDataClearing) ConfirmActionDialog(
         stringResource(R.string.factory_reset_confirm), 
         stringResource(R.string.factory_reset_alert), 
         Icons.Filled.Warning, 
@@ -899,6 +927,7 @@ fun ExpressiveSettingsScreen(
                 scope.launch {
                     val result = tk.glucodata.data.SettingsExporter.importFromJson(context, uri)
                     withContext(Dispatchers.Main) {
+                        ChildFriendlyMode.refresh()
                         if (result.isSuccess) {
                             Toast.makeText(
                                 context,
@@ -933,6 +962,7 @@ fun ExpressiveSettingsScreen(
                 scope.launch {
                     val result = tk.glucodata.data.ExportPackageExporter.importFromJson(context, uri)
                     withContext(Dispatchers.Main) {
+                        ChildFriendlyMode.refresh()
                         if (result.isSuccess) {
                             val summary = result.getOrThrow()
                             Toast.makeText(
@@ -992,6 +1022,16 @@ fun PredictiveSimulationSettingsScreen(
     val trendMomentumEnabled by viewModel.predictionTrendMomentumEnabled.collectAsStateWithLifecycle()
     val modelProfile by viewModel.predictionModelProfile.collectAsStateWithLifecycle()
     val horizonMinutes by viewModel.predictionHorizonMinutes.collectAsStateWithLifecycle()
+    val analysisEnabled by viewModel.predictionAnalysisEnabled.collectAsStateWithLifecycle()
+    val adaptiveEnabled by viewModel.predictionAdaptiveEnabled.collectAsStateWithLifecycle()
+    val analysisViewModel: PredictionAnalysisViewModel = viewModel()
+    val analysisSnapshot by analysisViewModel.snapshot.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    // The model's state is read once per visit; it changes at most once a day.
+    val adaptiveStatus = remember(adaptiveEnabled) {
+        tk.glucodata.data.prediction.analysis.AdaptivePredictionStore.status(context)
+    }
+    LaunchedEffect(Unit) { analysisViewModel.refresh() }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0.dp),
@@ -1073,8 +1113,104 @@ fun PredictiveSimulationSettingsScreen(
                     )
                 }
             }
+
+            item(key = "analysis") {
+                PredictionAnalysisSettingsGroup(
+                    analysisEnabled = analysisEnabled,
+                    onAnalysisEnabledChange = { viewModel.setPredictionAnalysisEnabled(it) },
+                    accuracySummary = predictionAccuracySummary(analysisSnapshot, adaptiveEnabled),
+                    onOpenAccuracy = { navController.navigate("settings/predictive-simulation/analysis") },
+                    adaptiveEnabled = adaptiveEnabled,
+                    adaptiveStatus = adaptiveStatus,
+                    onAdaptiveEnabledChange = { viewModel.setPredictionAdaptiveEnabled(it) },
+                    predictionEnabled = predictiveSimulationEnabled,
+                )
+            }
         }
     }
+}
+
+/**
+ * Recording, its results, and the experimental adaptive forecast: one group, because the
+ * accuracy screen is where the adaptive forecast earns its switch.
+ */
+@Composable
+internal fun PredictionAnalysisSettingsGroup(
+    analysisEnabled: Boolean,
+    onAnalysisEnabledChange: (Boolean) -> Unit,
+    accuracySummary: String,
+    onOpenAccuracy: () -> Unit,
+    adaptiveEnabled: Boolean,
+    adaptiveStatus: tk.glucodata.data.prediction.analysis.AdaptivePredictionStore.Status,
+    onAdaptiveEnabledChange: (Boolean) -> Unit,
+    predictionEnabled: Boolean,
+) {
+    Column {
+        SectionLabel(stringResource(R.string.prediction_analysis_section), topPadding = 12.dp)
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            SettingsSwitchItem(
+                title = stringResource(R.string.prediction_analysis_record),
+                subtitle = stringResource(R.string.prediction_analysis_record_summary),
+                checked = analysisEnabled,
+                onCheckedChange = onAnalysisEnabledChange,
+                icon = Icons.Default.History,
+                iconTint = MaterialTheme.colorScheme.secondary,
+                position = CardPosition.TOP,
+            )
+            SettingsItem(
+                title = stringResource(R.string.prediction_analysis_accuracy),
+                subtitle = accuracySummary,
+                onClick = onOpenAccuracy,
+                icon = Icons.Default.Insights,
+                iconTint = MaterialTheme.colorScheme.secondary,
+                position = CardPosition.MIDDLE,
+            )
+            SettingsSwitchItem(
+                title = stringResource(R.string.prediction_adaptive_title),
+                subtitle = when (adaptiveStatus) {
+                    // Nothing learns while it is off, so "learning" would not be true yet.
+                    is tk.glucodata.data.prediction.analysis.AdaptivePredictionStore.Status.Learning ->
+                        stringResource(if (adaptiveEnabled) R.string.prediction_adaptive_learning else R.string.prediction_adaptive_summary)
+                    is tk.glucodata.data.prediction.analysis.AdaptivePredictionStore.Status.NotBetter ->
+                        stringResource(R.string.prediction_adaptive_not_better)
+                    is tk.glucodata.data.prediction.analysis.AdaptivePredictionStore.Status.Ready -> {
+                        val days = adaptiveStatus.trainingDays.roundToInt().coerceAtLeast(1)
+                        pluralStringResource(R.plurals.prediction_adaptive_ready, days, days)
+                    }
+                },
+                checked = adaptiveEnabled,
+                onCheckedChange = onAdaptiveEnabledChange,
+                icon = Icons.Default.AutoAwesome,
+                iconTint = MaterialTheme.colorScheme.tertiary,
+                position = CardPosition.BOTTOM,
+                enabled = predictionEnabled,
+            )
+        }
+        Text(
+            text = stringResource(R.string.prediction_adaptive_caption),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp)
+        )
+    }
+}
+
+/** The accuracy row's subtitle: the 30-minute figure of the forecast on the chart, or why there is none. */
+@Composable
+private fun predictionAccuracySummary(
+    snapshot: tk.glucodata.data.prediction.analysis.PredictionAnalysisSnapshot?,
+    adaptiveShown: Boolean,
+): String {
+    val shown = if (adaptiveShown) tk.glucodata.data.prediction.analysis.ForecastModel.ADAPTIVE
+    else tk.glucodata.data.prediction.analysis.ForecastModel.STANDARD
+    val horizon = snapshot?.report?.model(shown)?.horizons?.firstOrNull { it.horizonMinutes == 30 }
+    if (horizon == null || horizon.count < tk.glucodata.data.prediction.analysis.PredictionAccuracy.MIN_RELIABLE_COUNT) {
+        return stringResource(R.string.prediction_analysis_accuracy_waiting)
+    }
+    val isMmol = tk.glucodata.ui.util.GlucoseFormatter.isMmolApp()
+    val value = tk.glucodata.ui.util.GlucoseFormatter.formatFromMgDl(horizon.meanAbsoluteError, isMmol) + " " +
+        stringResource(if (isMmol) R.string.unit_mmol else R.string.unit_mg)
+    return stringResource(R.string.prediction_analysis_accuracy_summary, value)
 }
 
 @Composable

@@ -144,6 +144,7 @@ private fun HistoryRoute(
     onTriggerCalibration: (CalibrationSheetState) -> Unit,
 //    initialShowReadingRows: Boolean = true
 ) {
+    val childFriendlyModeSettings = rememberChildFriendlyModeSettings()
     // The merged cross-sensor timeline — the previous sensor's calibrated
     // readings, imports and older device data stay visible across a sensor
     // swap — loaded around the chart's viewport plus the live tail. The chart
@@ -159,18 +160,16 @@ private fun HistoryRoute(
     val targetLow by dashboardViewModel.targetLow.collectAsStateWithLifecycle()
     val targetHigh by dashboardViewModel.targetHigh.collectAsStateWithLifecycle()
     val chartSmoothingMinutes by dashboardViewModel.chartSmoothingMinutes.collectAsStateWithLifecycle()
-    val dataSmoothingCollapseChunks by dashboardViewModel.dataSmoothingCollapseChunks.collectAsStateWithLifecycle()
-    val dataSmoothingExchangeOnly by dashboardViewModel.dataSmoothingExchangeOnly.collectAsStateWithLifecycle()
-    val dataSmoothingGraphOnly by dashboardViewModel.dataSmoothingGraphOnly.collectAsStateWithLifecycle()
+    val dataSmoothingTargets by dashboardViewModel.dataSmoothingTargets.collectAsStateWithLifecycle()
     val visualSmoothingMinutes = tk.glucodata.DataSmoothing.graphSmoothingMinutes(
         smoothingMinutes = chartSmoothingMinutes,
-        exchangeOutputsOnly = dataSmoothingExchangeOnly
+        targets = dataSmoothingTargets
     )
     val evaluationSmoothingMinutes = tk.glucodata.DataSmoothing.localSmoothingMinutes(
         smoothingMinutes = chartSmoothingMinutes,
-        graphOnly = dataSmoothingGraphOnly,
-        exchangeOutputsOnly = dataSmoothingExchangeOnly
+        targets = dataSmoothingTargets
     )
+    val visualCollapseMinutes = tk.glucodata.DataSmoothing.graphCollapseMinutes(chartSmoothingMinutes, dataSmoothingTargets)
     val previewWindowMode by dashboardViewModel.previewWindowMode.collectAsStateWithLifecycle()
     val journalEnabled by dashboardViewModel.journalEnabled.collectAsStateWithLifecycle()
     val journalDoseCalculatorEnabled by dashboardViewModel.journalDoseCalculatorEnabled.collectAsStateWithLifecycle()
@@ -207,7 +206,7 @@ private fun HistoryRoute(
         targetHigh = targetHigh,
         graphSmoothingMinutes = visualSmoothingMinutes,
         evaluationSmoothingMinutes = evaluationSmoothingMinutes,
-        collapseSmoothedData = dataSmoothingCollapseChunks,
+        graphCollapseMinutes = visualCollapseMinutes,
         previewWindowMode = previewWindowMode,
         calibrations = calibrations,
         title = title,
@@ -235,8 +234,10 @@ private fun HistoryRoute(
                 )
             )
         },
-        onDeleteReading = { point ->
-            dashboardViewModel.deleteHistoryReading(point, sensorName)
+        onDeleteReading = if (!childFriendlyModeSettings.hideDataClearing) {
+            { point -> dashboardViewModel.deleteHistoryReading(point, sensorName) }
+        } else {
+            null
         },
         onJournalEntryClick = { entry ->
             lastJournalType = entry.type
@@ -328,18 +329,16 @@ private fun JournalRoute(
     val targetLow by dashboardViewModel.targetLow.collectAsStateWithLifecycle()
     val targetHigh by dashboardViewModel.targetHigh.collectAsStateWithLifecycle()
     val chartSmoothingMinutes by dashboardViewModel.chartSmoothingMinutes.collectAsStateWithLifecycle()
-    val dataSmoothingCollapseChunks by dashboardViewModel.dataSmoothingCollapseChunks.collectAsStateWithLifecycle()
-    val dataSmoothingExchangeOnly by dashboardViewModel.dataSmoothingExchangeOnly.collectAsStateWithLifecycle()
-    val dataSmoothingGraphOnly by dashboardViewModel.dataSmoothingGraphOnly.collectAsStateWithLifecycle()
+    val dataSmoothingTargets by dashboardViewModel.dataSmoothingTargets.collectAsStateWithLifecycle()
     val visualSmoothingMinutes = tk.glucodata.DataSmoothing.graphSmoothingMinutes(
         smoothingMinutes = chartSmoothingMinutes,
-        exchangeOutputsOnly = dataSmoothingExchangeOnly
+        targets = dataSmoothingTargets
     )
     val evaluationSmoothingMinutes = tk.glucodata.DataSmoothing.localSmoothingMinutes(
         smoothingMinutes = chartSmoothingMinutes,
-        graphOnly = dataSmoothingGraphOnly,
-        exchangeOutputsOnly = dataSmoothingExchangeOnly
+        targets = dataSmoothingTargets
     )
+    val visualCollapseMinutes = tk.glucodata.DataSmoothing.graphCollapseMinutes(chartSmoothingMinutes, dataSmoothingTargets)
     val previewWindowMode by dashboardViewModel.previewWindowMode.collectAsStateWithLifecycle()
     val journalEnabled by dashboardViewModel.journalEnabled.collectAsStateWithLifecycle()
     val journalDoseCalculatorEnabled by dashboardViewModel.journalDoseCalculatorEnabled.collectAsStateWithLifecycle()
@@ -392,7 +391,7 @@ private fun JournalRoute(
         targetLow = targetLow,
         targetHigh = targetHigh,
         graphSmoothingMinutes = visualSmoothingMinutes,
-        collapseSmoothedData = dataSmoothingCollapseChunks,
+        graphCollapseMinutes = visualCollapseMinutes,
         previewWindowMode = previewWindowMode,
         calibrations = calibrations,
         journalEntries = journalEntries,
@@ -701,17 +700,35 @@ fun MainApp(themeMode: ThemeMode, onThemeChanged: (ThemeMode) -> Unit) {
     // Hoisted Calibration Sheet State
     var calibrationSheetState by remember { mutableStateOf<CalibrationSheetState>(CalibrationSheetState.Hidden) }
 
-    val onTriggerCalibration: (CalibrationSheetState) -> Unit = { state ->
-        calibrationSheetState = state
-    }
     val navigationTapCatcher = remember { NavigationTapCatcher() }
     val context = LocalContext.current
+    val childFriendlyModeSettings = rememberChildFriendlyModeSettings()
+    val onTriggerCalibration: (CalibrationSheetState) -> Unit = { state ->
+        if (!childFriendlyModeSettings.hideCalibration) calibrationSheetState = state
+    }
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     // Handle back button to exit app when on start destination
     val currentBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = currentBackStackEntry?.destination?.route
+    LaunchedEffect(childFriendlyModeSettings, currentRoute) {
+        if (childFriendlyModeSettings.hideCalibration) {
+            calibrationSheetState = CalibrationSheetState.Hidden
+            if (currentRoute != null && currentRoute in setOf(
+                    "calibrations",
+                    "settings/calibrations",
+                    "calibrations/model-table",
+                    "settings/calibrations/model-table",
+                )
+            ) {
+                navController.popBackStack()
+            }
+        }
+        if (childFriendlyModeSettings.hideSmoothing && currentRoute == "settings/data-smoothing") {
+            navController.popBackStack()
+        }
+    }
     val journalEnabled by dashboardViewModel.journalEnabled.collectAsStateWithLifecycle()
     val journalNavigationTabEnabled by dashboardViewModel.journalNavigationTabEnabled.collectAsStateWithLifecycle()
     val showJournalNav = journalEnabled && journalNavigationTabEnabled
@@ -995,6 +1012,7 @@ private fun NavGraphBuilder.appDestinations(
         )
     }
     composable("settings") { ExpressiveSettingsScreen(navController, themeMode, onThemeChanged, dashboardViewModel) }
+    composable("settings/child-friendly-mode") { ChildFriendlyModeSettingsScreen(navController) }
     composable("settings/nightscout") { NightscoutSettingsScreen(navController) }
     composable("settings/libreview") { LibreViewSettingsScreen(navController) }
     composable("settings/mq-account") { MQAccountSettingsScreen(navController) }
@@ -1028,6 +1046,12 @@ private fun NavGraphBuilder.appDestinations(
     }
     composable("settings/predictive-simulation/model-profile") {
         PredictionModelProfileScreen(navController, dashboardViewModel)
+    }
+    composable("settings/predictive-simulation/analysis") {
+        PredictionAnalysisScreen(navController, dashboardViewModel)
+    }
+    composable("settings/predictive-simulation/analysis/forecasts") {
+        PredictionInspectorScreen(navController, dashboardViewModel)
     }
     composable("settings/floating-display") {
         FloatingGlucoseSettingsScreen(navController, dashboardViewModel)

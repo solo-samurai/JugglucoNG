@@ -296,6 +296,7 @@ fun DashboardScreen(
     // push the whole dashboard down by one gap whenever there is no update to announce.
     val appUpdateBannerVisible = rememberAppUpdateBannerVisible()
     val context = LocalContext.current
+    val childFriendlyModeSettings = rememberChildFriendlyModeSettings()
     val lifecycleOwner = LocalLifecycleOwner.current
     val view = LocalView.current
     val dashboardPrefs = remember(context) {
@@ -354,21 +355,20 @@ fun DashboardScreen(
         mutableStateOf(tk.glucodata.ui.stats.PinnedWindow.TODAY)
     }
     val chartSmoothingMinutes by viewModel.chartSmoothingMinutes.collectAsStateWithLifecycle()
-    val dataSmoothingGraphOnly by viewModel.dataSmoothingGraphOnly.collectAsStateWithLifecycle()
-    val dataSmoothingCollapseChunks by viewModel.dataSmoothingCollapseChunks.collectAsStateWithLifecycle()
-    val dataSmoothingExchangeOnly by viewModel.dataSmoothingExchangeOnly.collectAsStateWithLifecycle()
+    val dataSmoothingTargets by viewModel.dataSmoothingTargets.collectAsStateWithLifecycle()
     // The chart's window and the reading's window, resolved once from the same switches.
     // The chart is presentation; everything else on this screen is what the app is going
     // to reason with, so it gets the window the notification and the alarms use.
     val visualSmoothingMinutes = tk.glucodata.DataSmoothing.graphSmoothingMinutes(
         smoothingMinutes = chartSmoothingMinutes,
-        exchangeOutputsOnly = dataSmoothingExchangeOnly
+        targets = dataSmoothingTargets
     )
     val evaluationSmoothingMinutes = tk.glucodata.DataSmoothing.localSmoothingMinutes(
         smoothingMinutes = chartSmoothingMinutes,
-        graphOnly = dataSmoothingGraphOnly,
-        exchangeOutputsOnly = dataSmoothingExchangeOnly
+        targets = dataSmoothingTargets
     )
+    val visualCollapseMinutes = tk.glucodata.DataSmoothing.graphCollapseMinutes(chartSmoothingMinutes, dataSmoothingTargets)
+    val evaluationCollapseMinutes = tk.glucodata.DataSmoothing.localCollapseMinutes(chartSmoothingMinutes, dataSmoothingTargets)
     val previewWindowMode by viewModel.previewWindowMode.collectAsStateWithLifecycle()
     val journalEnabled by viewModel.journalEnabled.collectAsStateWithLifecycle()
     val journalEiobDisplayEnabled by viewModel.journalEiobDisplayEnabled.collectAsStateWithLifecycle()
@@ -391,6 +391,7 @@ fun DashboardScreen(
     val journalFoodLibraryEnabled by viewModel.journalFoodLibraryEnabled.collectAsStateWithLifecycle()
     val predictiveSimulationEnabled by viewModel.predictiveSimulationEnabled.collectAsStateWithLifecycle()
     val predictionTrendMomentumEnabled by viewModel.predictionTrendMomentumEnabled.collectAsStateWithLifecycle()
+    val predictionAdaptiveEnabled by viewModel.predictionAdaptiveEnabled.collectAsStateWithLifecycle()
     val predictionCarbRatioGramsPerUnit by viewModel.predictionCarbRatioGramsPerUnit.collectAsStateWithLifecycle()
     val predictionInsulinSensitivityMgDlPerUnit by viewModel.predictionInsulinSensitivityMgDlPerUnit.collectAsStateWithLifecycle()
     val predictionModelProfile by viewModel.predictionModelProfile.collectAsStateWithLifecycle()
@@ -528,7 +529,8 @@ fun DashboardScreen(
         predictionCarbAbsorptionGramsPerHour,
         predictionHorizonMinutes,
         journalEnabled,
-        journalFoodMacrosEnabled
+        journalFoodMacrosEnabled,
+        predictionAdaptiveEnabled
     ) {
         PredictiveSimulationSettings(
             enabled = predictiveSimulationEnabled,
@@ -538,18 +540,19 @@ fun DashboardScreen(
             insulinSensitivityMgDlPerUnit = predictionInsulinSensitivityMgDlPerUnit,
             carbAbsorptionGramsPerHour = predictionCarbAbsorptionGramsPerHour,
             foodMacrosEnabled = journalEnabled && journalFoodMacrosEnabled,
-            modelProfile = predictionModelProfile
+            modelProfile = predictionModelProfile,
+            adaptive = predictionAdaptiveEnabled
         )
     }
     val consumerHistory = remember(
         glucoseHistory,
         evaluationSmoothingMinutes,
-        dataSmoothingCollapseChunks
+        evaluationCollapseMinutes
     ) {
         buildSmoothedConsumerHistory(
             points = glucoseHistory,
             evaluationSmoothingMinutes = evaluationSmoothingMinutes,
-            collapseChunks = dataSmoothingCollapseChunks
+            evaluationCollapseMinutes = evaluationCollapseMinutes
         )
     }
     // Read off the current state, not off the far end of the forecast: the hint answers
@@ -1404,7 +1407,9 @@ fun DashboardScreen(
                     is CalibrationSheetState.Edit -> state.entity.isRawMode
                     CalibrationSheetState.Hidden -> false
                 }
-                if (tk.glucodata.data.calibration.CalibrationManager.isEnabledForMode(targetRawMode, targetSensorId)) {
+                if (!childFriendlyModeSettings.hideCalibration &&
+                    tk.glucodata.data.calibration.CalibrationManager.isEnabledForMode(targetRawMode, targetSensorId)
+                ) {
                     onTriggerCalibration(state)
                 }
             }
@@ -1658,8 +1663,10 @@ fun DashboardScreen(
                                         )
                                     )
                                 },
-                                onDeleteReading = { point ->
-                                    viewModel.deleteHistoryReading(point, sensorName)
+                                onDeleteReading = if (!childFriendlyModeSettings.hideDataClearing) {
+                                    { point -> viewModel.deleteHistoryReading(point, sensorName) }
+                                } else {
+                                    null
                                 },
                                 modifier = Modifier
                             )
@@ -1680,11 +1687,13 @@ fun DashboardScreen(
                         .padding(top = 8.dp, bottom = 8.dp)
                 ) {
                         Box(modifier = Modifier.weight(1f).fillMaxSize()) {
-                            key(sensorName) {
+                            // Sensor role changes keep the existing viewport and plot state.
+                            key(Unit) {
                                 FontScaleCap {
                                     DashboardChartSection(
                                         modifier = Modifier.fillMaxSize(),
                                         glucoseHistory = glucoseHistory,
+                                        primarySensorId = sensorName,
                                         dataBounds = chartDataBounds,
                                         onVisibleRangeChanged = viewModel::onChartViewportChanged,
                                         multiSensorDisplay = multiSensorDisplay,
@@ -1699,7 +1708,7 @@ fun DashboardScreen(
                                         appChartRangeColors = appChartRangeColorsEnabled,
                                         predictionSeries = predictionSeries,
                                         graphSmoothingMinutes = visualSmoothingMinutes,
-                                        collapseSmoothedData = dataSmoothingCollapseChunks,
+                                        graphCollapseMinutes = visualCollapseMinutes,
                                         previewWindowMode = previewWindowMode,
                                         graphLow = graphLow,
                                         graphHigh = graphHigh,
@@ -1925,13 +1934,15 @@ fun DashboardScreen(
                                 .fillMaxWidth()
                                 .height(animatedChartItemHeight)
                         ) {
-                            key(sensorName) {
+                            // Sensor role changes keep the existing viewport and plot state.
+                            key(Unit) {
                                 FontScaleCap {
                                     DashboardChartSection(
                                         modifier = Modifier
                                             .fillMaxSize()
                                             .padding(bottom = 0.dp),
                                         glucoseHistory = glucoseHistory,
+                                        primarySensorId = sensorName,
                                         dataBounds = chartDataBounds,
                                         onVisibleRangeChanged = viewModel::onChartViewportChanged,
                                         multiSensorDisplay = multiSensorDisplay,
@@ -1946,7 +1957,7 @@ fun DashboardScreen(
                                         appChartRangeColors = appChartRangeColorsEnabled,
                                         predictionSeries = predictionSeries,
                                         graphSmoothingMinutes = visualSmoothingMinutes,
-                                        collapseSmoothedData = dataSmoothingCollapseChunks,
+                                        graphCollapseMinutes = visualCollapseMinutes,
                                         previewWindowMode = previewWindowMode,
                                         graphLow = graphLow,
                                         graphHigh = graphHigh,
@@ -2129,8 +2140,10 @@ fun DashboardScreen(
                                         )
                                     )
                                 },
-                                onDeleteReading = { point ->
-                                    viewModel.deleteHistoryReading(point, sensorName)
+                                onDeleteReading = if (!childFriendlyModeSettings.hideDataClearing) {
+                                    { point -> viewModel.deleteHistoryReading(point, sensorName) }
+                                } else {
+                                    null
                                 },
                                 onBaselineHeightMeasured = if (index == 0) {
                                     { measuredReadingBaselineHeightPx = it }
@@ -2144,32 +2157,34 @@ fun DashboardScreen(
                     }
                 }
 
-                // Calibrations Card
-                item {
-                    Box(modifier = Modifier.padding(horizontal = contentHorizontalPadding)) {
-                        CalibrationsCard(
-                            viewMode = viewMode,
-                            isMmol = tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit),
-                            sensorId = sensorName,
-                            showEmptyAction = hasVisibleReadingContent,
-                            onAddCalibration = {
-                                val autoVal = latestPoint?.value ?: tk.glucodata.GlucoseValueParser.parseFirstOrZero(currentGlucose)
-                                val rawVal = latestPoint?.rawValue ?: autoVal
-                                triggerCalibrationIfEnabled(
-                                    CalibrationSheetState.New(
-                                        autoVal,
-                                        rawVal,
-                                        latestPoint?.timestamp ?: System.currentTimeMillis(),
-                                        latestPoint?.sensorSerial?.takeIf { it.isNotBlank() } ?: sensorName
+                if (!childFriendlyModeSettings.hideCalibration) {
+                    // Calibrations Card
+                    item {
+                        Box(modifier = Modifier.padding(horizontal = contentHorizontalPadding)) {
+                            CalibrationsCard(
+                                viewMode = viewMode,
+                                isMmol = tk.glucodata.ui.util.GlucoseFormatter.isMmol(unit),
+                                sensorId = sensorName,
+                                showEmptyAction = hasVisibleReadingContent,
+                                onAddCalibration = {
+                                    val autoVal = latestPoint?.value ?: tk.glucodata.GlucoseValueParser.parseFirstOrZero(currentGlucose)
+                                    val rawVal = latestPoint?.rawValue ?: autoVal
+                                    triggerCalibrationIfEnabled(
+                                        CalibrationSheetState.New(
+                                            autoVal,
+                                            rawVal,
+                                            latestPoint?.timestamp ?: System.currentTimeMillis(),
+                                            latestPoint?.sensorSerial?.takeIf { it.isNotBlank() } ?: sensorName
+                                        )
                                     )
-                                )
-                            },
-                            onEditCalibration = { cal ->
-                                triggerCalibrationIfEnabled(CalibrationSheetState.Edit(cal))
-                            },
-                            onViewHistory = onNavigateToCalibrations,
-                            snackbarHostState = snackbarHostState
-                        )
+                                },
+                                onEditCalibration = { cal ->
+                                    triggerCalibrationIfEnabled(CalibrationSheetState.Edit(cal))
+                                },
+                                onViewHistory = onNavigateToCalibrations,
+                                snackbarHostState = snackbarHostState
+                            )
+                        }
                     }
                 }
             }
